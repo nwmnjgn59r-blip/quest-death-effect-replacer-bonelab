@@ -1,0 +1,201 @@
+using System;
+using System.ComponentModel;
+using System.Drawing;
+using System.Linq;
+using System.Numerics;
+using System.Timers;
+using MelonLoader;
+using UnityEngine;
+using Component = UnityEngine.Component;
+using Vector2 = UnityEngine.Vector2;
+
+[assembly: MelonInfo(typeof(QuestDeathVignetteFix.Main), "Quest death effect replacer", "1.0.0", "genisis inc")]
+[assembly: MelonGame("Stress Level Zero", "BONELAB")]
+
+namespace QuestDeathVignetteFix
+{
+    public class Main : MelonMod
+    {
+        private GameObject vignetteObj;
+        private Material vignetteMat;
+        private Texture2D vignetteTex;
+
+        private float alpha = 0f;
+
+        public override void OnInitializeMelon()
+        {
+            MelonLogger.Msg("Quest Death Vignette Fix loaded.");
+            CreateVignette();
+        }
+
+        public override void OnUpdate()
+        {
+            if (Camera.main == null) return;
+
+            AttachToCamera();
+
+            bool playerDead = IsPlayerDeadOrVeryLowHealth();
+
+            alpha = Mathf.MoveTowards(alpha, playerDead ? 0.85f : 0f, Time.deltaTime * 3f);
+
+            if (vignetteMat != null)
+            {
+                UnityEngine.Color c = UnityEngine.Color.black;
+                c.a = alpha;
+                vignetteMat.color = c;
+            }
+
+            if (vignetteObj != null)
+                vignetteObj.SetActive(alpha > 0.01f);
+
+            if (playerDead)
+                DisableQuestSpikeDeathEffect();
+        }
+
+        private void CreateVignette()
+        {
+            vignetteTex = GenerateVignetteTexture(512, 512);
+
+            vignetteMat = new Material(Shader.Find("Unlit/Transparent"));
+            vignetteMat.mainTexture = vignetteTex;
+            vignetteMat.color = new UnityEngine.Color(0f, 0f, 0f, 0f);
+
+            vignetteObj = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            vignetteObj.name = "PCVR_Style_Death_Vignette";
+            UnityEngine.Object.Destroy(vignetteObj.GetComponent<Collider>());
+
+            var renderer = vignetteObj.GetComponent<MeshRenderer>();
+            renderer.material = vignetteMat;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+
+            vignetteObj.SetActive(false);
+            UnityEngine.Object.DontDestroyOnLoad(vignetteObj);
+        }
+
+        private void AttachToCamera()
+        {
+            Camera cam = Camera.main;
+
+            vignetteObj.transform.SetParent(cam.transform, false);
+            vignetteObj.transform.localPosition = new UnityEngine.Vector3(0f, 0f, 0.31f);
+            vignetteObj.transform.localRotation = UnityEngine.Quaternion.identity;
+
+            float height = 2f * 0.31f * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            float width = height * cam.aspect;
+
+            vignetteObj.transform.localScale = new UnityEngine.Vector3(width * 1.25f, height * 1.25f, 1f);
+        }
+
+        private Texture2D GenerateVignetteTexture(int width, int height)
+        {
+            Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+
+            Vector2 center = new Vector2(width / 2f, height / 2f);
+            float maxDist = Vector2.Distance(Vector2.zero, center);
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    float dist = UnityEngine.Vector2.Distance(new UnityEngine.Vector2(x, y), center) / maxDist;
+
+                    float edge = Mathf.InverseLerp(0.35f, 1f, dist);
+                    edge = Mathf.Pow(edge, 2.2f);
+
+                    tex.SetPixel(x, y, new UnityEngine.Color(0f, 0f, 0f, edge));
+                }
+            }
+
+            tex.Apply();
+            return tex;
+        }
+
+        private bool IsPlayerDeadOrVeryLowHealth()
+        {
+            try
+            {
+                var allObjects = UnityEngine.Object.FindObjectsOfType<GameObject>();
+
+                foreach (var obj in allObjects)
+                {
+                    if (obj == null) continue;
+
+                    string name = obj.name.ToLower();
+
+                    if (!name.Contains("player") && !name.Contains("rig"))
+                        continue;
+
+                    var components = obj.GetComponents<Component>();
+
+                    foreach (var comp in components)
+                    {
+                        if (comp == null) continue;
+
+                        Type t = comp.GetType();
+
+                        foreach (var field in t.GetFields())
+                        {
+                            string f = field.Name.ToLower();
+
+                            if (f.Contains("dead") || f.Contains("dying"))
+                            {
+                                object value = field.GetValue(comp);
+                                if (value is bool b && b)
+                                    return true;
+                            }
+
+                            if (f.Contains("health") || f.Contains("hp"))
+                            {
+                                object value = field.GetValue(comp);
+
+                                if (value is float hp && hp <= 0.01f)
+                                    return true;
+
+                                if (value is int ihp && ihp <= 0)
+                                    return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private void DisableQuestSpikeDeathEffect()
+        {
+            try
+            {
+                var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
+
+                foreach (var r in renderers)
+                {
+                    if (r == null) continue;
+
+                    string n = r.name.ToLower();
+
+                    bool looksLikeQuestDeathSpike =
+                        n.Contains("death") &&
+                        (n.Contains("spike") || n.Contains("thorn") || n.Contains("vignette"));
+
+                    if (looksLikeQuestDeathSpike)
+                        r.enabled = false;
+
+                    if (r.material != null)
+                    {
+                        string matName = r.material.name.ToLower();
+
+                        if (matName.Contains("death") &&
+                            (matName.Contains("spike") || matName.Contains("thorn")))
+                        {
+                            r.enabled = false;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+}
